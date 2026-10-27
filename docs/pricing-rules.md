@@ -89,5 +89,5 @@ python3 scripts/update_shop_prices_manager6.py \
   --stats-out /tmp/manager6-price-stats.json
 ```
 
-Итоговый файл для импорта в WP обычно кладётся в store: `docs/shop_27.10-updated.csv`.  
+Итоговый файл для импорта в WP: **`shop_27.10-updated.csv`** в корне репозитория (копия также в Project store `docs/shop_27.10-updated.csv`).  
 Категории/теги (`category-2`, `tag-2`) этим скриптом **не меняются**.
