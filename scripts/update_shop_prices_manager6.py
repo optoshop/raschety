@@ -50,6 +50,24 @@ TIER_MAP = {
     "1000 + шт": 4,
 }
 
+# Подписи тиров в post_excerpt (короткое описание на сайте)
+EXCERPT_TIER_LABELS = [
+    "50-90 шт",
+    "100-290 шт",
+    "300-490 шт",
+    "500-990 шт",
+    "1000 + шт",
+]
+
+# <strong>50-90 шт - 2,46 руб</strong> / «руб / шт» / «с НДС» / nbsp
+_TIER_LINE_RES = [
+    re.compile(r"<strong>\s*50-90\s*шт\s*[-–—]\s*[^<]*</strong>", re.I),
+    re.compile(r"<strong>\s*100-290\s*шт\s*[-–—]\s*[^<]*</strong>", re.I),
+    re.compile(r"<strong>\s*300-490\s*шт\s*[-–—]\s*[^<]*</strong>", re.I),
+    re.compile(r"<strong>\s*500-990\s*шт\s*[-–—]\s*[^<]*</strong>", re.I),
+    re.compile(r"<strong>\s*1000\s*\+\s*шт\s*[-–—]\s*[^<]*</strong>", re.I),
+]
+
 FOUR_VALVE = "Четырехклапанные"
 SKIP_SKUS = {"K1034", "K59", "K60", "K61", "K62", "K63", "K64", "K65"}
 # Исключение: 600×400×400 — цены с сайта не менять (см. pricing-rules.md)
@@ -368,6 +386,34 @@ def norm_qty(q: str) -> str:
     return (q or "").strip().replace("1000 + шт", "1000+ шт")
 
 
+def price_ru(price: str | float) -> str:
+    """Цена для текста: запятая как десятичный разделитель."""
+    if isinstance(price, float):
+        s = money(price)
+    else:
+        s = str(price).strip().replace(",", ".")
+        n = fnum(s)
+        s = money(n) if n is not None else s
+    return s.replace(".", ",")
+
+
+def format_excerpt_tier_line(label: str, price: str | float) -> str:
+    return f"<strong>{label} — {price_ru(price)} руб с НДС</strong>"
+
+
+def sync_post_excerpt_tiers(excerpt: str, tier_prices: list[str | float]) -> tuple[str, int]:
+    """Подставить актуальные цены тиров в post_excerpt. Возвращает (текст, сколько строк заменено)."""
+    if not excerpt or len(tier_prices) != 5:
+        return excerpt, 0
+    text = excerpt
+    replaced = 0
+    for i, (rx, label) in enumerate(zip(_TIER_LINE_RES, EXCERPT_TIER_LABELS)):
+        new_line = format_excerpt_tier_line(label, tier_prices[i])
+        text, n = rx.subn(new_line, text, count=1)
+        replaced += n
+    return text, replaced
+
+
 def verify_examples() -> None:
     cases = [
         ((150, 150, 250), "U", [1.62, 1.43, 1.24, 1.14, 0.95]),
@@ -419,6 +465,9 @@ def process(shop_in: Path, shop_out: Path, stats_out: Path | None) -> dict:
         "var_rows_numeric": 0,
         "var_rows_same": 0,
         "simple_skipped_or_n_a": 0,
+        "excerpt_parents_updated": 0,
+        "excerpt_lines_replaced": 0,
+        "excerpt_missing_tiers": [],
         "examples": {},
         "unchanged_non_four_valve": True,
     }
@@ -481,6 +530,28 @@ def process(shop_in: Path, shop_out: Path, stats_out: Path | None) -> dict:
         if parent_sku not in stats["updated_parents"]:
             stats["updated_parents"].append(parent_sku)
 
+    # post_excerpt: текст тиров только у parent, чьи regular_price реально меняли
+    for sku in stats["updated_parents"]:
+        parent = parents_by_sku.get(sku)
+        if not parent:
+            continue
+        prices_by_tier = [None] * 5
+        for child in children.get(sku, []):
+            qty = norm_qty(child.get("meta:attribute_pa_colichestvo") or "")
+            if qty not in TIER_MAP:
+                continue
+            prices_by_tier[TIER_MAP[qty]] = (child.get("regular_price") or "").strip()
+        if any(p is None or p == "" for p in prices_by_tier):
+            stats["excerpt_missing_tiers"].append(sku)
+            continue
+        new_ex, n = sync_post_excerpt_tiers(parent.get("post_excerpt") or "", prices_by_tier)
+        if n:
+            parent["post_excerpt"] = new_ex
+            stats["excerpt_parents_updated"] += 1
+            stats["excerpt_lines_replaced"] += n
+        elif re.search(r"50-90\s*шт", parent.get("post_excerpt") or ""):
+            stats["excerpt_missing_tiers"].append(sku)
+
     # examples for readme
     for label, dims in [
         ("150x150x250", (150, 150, 250)),
@@ -535,6 +606,9 @@ def main(argv: list[str] | None = None) -> int:
                 "skipped_sale": stats["skipped_sale_count"],
                 "skipped_stamp": stats["skipped_stamp_count"],
                 "skipped_exception_600": stats["skipped_exception_600"],
+                "excerpt_parents_updated": stats["excerpt_parents_updated"],
+                "excerpt_lines_replaced": stats["excerpt_lines_replaced"],
+                "excerpt_missing_tiers": stats["excerpt_missing_tiers"],
                 "examples": stats["examples"],
             },
             ensure_ascii=False,
